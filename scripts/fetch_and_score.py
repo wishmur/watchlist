@@ -154,6 +154,11 @@ def fetch_greenhouse_jd(job_id: str, slug: str) -> str:
 
 
 def fetch_ashby(slug: str) -> list[dict]:
+    # Ashby's posting-api response moved from {"jobPostings": [...], job.locationName}
+    # to {"jobs": [...], job.location} at some point after this was first written.
+    # An unrecognized key silently returns [] (not an exception), so this broke
+    # every Ashby-sourced company with no warning — confirmed live that 0 of the
+    # then-current board matches were Ashby-sourced despite it being 1 of 4 ATSes.
     url = f"https://api.ashbyhq.com/posting-api/job-board/{slug}"
     try:
         r = httpx.get(url, timeout=20)
@@ -162,12 +167,12 @@ def fetch_ashby(slug: str) -> list[dict]:
             {
                 "ats_job_id": j.get("id", ""),
                 "title":      j.get("title", ""),
-                "location":   j.get("locationName", ""),
+                "location":   j.get("location", ""),
                 "url":        j.get("jobUrl", ""),
                 "posted_at":  j.get("publishedAt"),
                 "raw_jd":     _strip_html(j.get("descriptionHtml", "")),
             }
-            for j in r.json().get("jobPostings", [])
+            for j in r.json().get("jobs", [])
             if j.get("isListed") is not False
         ]
     except Exception as e:

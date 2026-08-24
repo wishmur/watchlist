@@ -123,17 +123,19 @@ async def check_greenhouse(client, slug, sem):
 
 
 async def check_ashby(client, slug, sem):
+    # Ashby's posting-api response moved from {"jobPostings": [...], job.locationName}
+    # to {"jobs": [...], job.location} — see the matching fix in fetch_and_score.py.
     async with sem:
         try:
             r = await client.get(f"https://api.ashbyhq.com/posting-api/job-board/{slug}", timeout=15)
             if r.status_code != 200:
                 return None
-            postings = r.json().get("jobPostings", [])
+            postings = r.json().get("jobs", [])
         except Exception:
             return None
         for p in postings:
             title = p.get("title") or ""
-            loc = p.get("locationName", "")
+            loc = p.get("location", "")
             if classify_role(title) is not None and is_us_location(loc):
                 return title
         return None

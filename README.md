@@ -46,6 +46,14 @@ The board is read-only — there's no write path or password to configure.
 > Also run `sql/004_filter_v_watchlist_by_score.sql` once — required so the
 > board keeps showing only ≥65 matches now that `fetch_and_score.py` stores
 > every score (the fix that stopped daily re-scoring of rejects).
+>
+> Also run `sql/005_public_read_hardening.sql` once — required for the
+> frontend's header stats (companies tracked, ATS platforms covered) and
+> market-snapshot section. It replaces the frontend's direct reads of the
+> raw `companies`/`matches` tables with two narrow aggregate views
+> (`v_watchlist_meta`, `v_ats_coverage`) and revokes public SELECT on the
+> raw tables, which previously let anyone with the (necessarily public)
+> anon key query every score ever computed, not just the curated board.
 
 ### 2. GitHub repo
 
@@ -215,6 +223,7 @@ sql/
   002_rls_policies.sql
   003_remove_applications.sql   — one-time migration for older DBs (drops apply feature)
   004_filter_v_watchlist_by_score.sql   — one-time migration: filter board to score >= 65
+  005_public_read_hardening.sql   — one-time migration: aggregate-only public views, revoke raw-table reads
   seed.sql
 requirements.txt
 README.md

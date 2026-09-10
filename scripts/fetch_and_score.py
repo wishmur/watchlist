@@ -42,10 +42,17 @@ logging.basicConfig(
 log = logging.getLogger("watchlist")
 
 # ── Config ─────────────────────────────────────────────────────────────────────
+# Credentials are loaded lazily via _load_config() rather than at import time, so
+# this module can be imported for its scoring functions (score_job, _call_model,
+# _apply_score_guards -- used directly by scripts/run_eval.py) without requiring
+# Supabase/Anthropic secrets to be present. main() calls _load_config() itself;
+# any other caller that needs Supabase I/O or model calls must call it first.
 
-SUPABASE_URL         = os.environ["SUPABASE_URL"].rstrip("/")
-SUPABASE_SERVICE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
-ANTHROPIC_API_KEY    = os.environ["ANTHROPIC_API_KEY"]
+SUPABASE_URL: Optional[str] = None
+SUPABASE_SERVICE_KEY: Optional[str] = None
+ANTHROPIC_API_KEY: Optional[str] = None
+HEADERS_SB: Optional[dict] = None
+
 SCORE_THRESHOLD      = int(os.getenv("SCORE_THRESHOLD", "65"))
 
 # Two-stage scoring to keep cost down: a cheap Haiku pass screens every job, and
@@ -68,11 +75,35 @@ SCORE_STATS = {
     "input_tokens": {},   # {model: total uncached input tokens billed at full price}
 }
 
-HEADERS_SB = {
-    "apikey": SUPABASE_SERVICE_KEY,
-    "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
-    "Content-Type": "application/json",
-}
+def _load_anthropic_key() -> None:
+    """Load just ANTHROPIC_API_KEY -- everything score_job()/_call_model() need.
+    Split out from _load_config() so a scoring-only caller (e.g. run_eval.py in
+    --dry-run mode, before it decides whether it also needs to write results to
+    Supabase) doesn't have to have Supabase secrets configured at all."""
+    global ANTHROPIC_API_KEY
+    ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
+
+
+def _load_supabase_config() -> None:
+    """Load SUPABASE_URL/SUPABASE_SERVICE_KEY and build HEADERS_SB -- everything
+    sb_get()/sb_upsert()/sb_patch() need."""
+    global SUPABASE_URL, SUPABASE_SERVICE_KEY, HEADERS_SB
+    SUPABASE_URL = os.environ["SUPABASE_URL"].rstrip("/")
+    SUPABASE_SERVICE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
+    HEADERS_SB = {
+        "apikey": SUPABASE_SERVICE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+        "Content-Type": "application/json",
+    }
+
+
+def _load_config() -> None:
+    """Load every required env var (GitHub Actions secrets, or exported locally).
+    Raises KeyError with the missing var's name if one isn't set. Safe to call
+    more than once. This is what main() (the daily pipeline) uses, since it needs
+    both model calls and Supabase I/O."""
+    _load_anthropic_key()
+    _load_supabase_config()
 
 # Recency windows:
 #   - A company already in the DB fetches only its recent postings (~last 24h).
@@ -323,7 +354,8 @@ LOCATION FIT:
   moderate: US-eligible but ambiguous.
   weak:     Genuinely non-US, or requires work authorization / relocation outside the US.
 
-BLOCKER: set blocker true only if the JD requires US citizenship, an active security clearance, a green card / permanent residency, or states no visa sponsorship ever. The candidate is on OPT and cannot take those.
+BLOCKER: set blocker true only if the JD requires US citizenship, an active security clearance, a green card / permanent residency, or explicitly states no US visa sponsorship, ever, for a US-based role. The candidate is on OPT and cannot take those.
+Do NOT set blocker for a non-US role's own-country work-authorization requirements (e.g. "must have the right to work in the UK," "unable to sponsor a visa" for a UK/EU/etc. role) — that is a location_fit problem (score location_fit weak), not a blocker. Blocker is specifically about US sponsorship for a US-based role.
 
 SCORING FORMULA — start at 75, then adjust:
   role_fit:     strong +15 | moderate +5 | weak -20
@@ -498,6 +530,7 @@ def sb_patch(table: str, filters: dict, data: dict):
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
+    _load_config()
     log.info("=== Watchlist pipeline starting ===")
 
     companies = sb_get("companies", {"active": "eq.true", "select": "*"})

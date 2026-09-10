@@ -1,0 +1,241 @@
+# eval/golden_set.yaml
+# Hand-labeled examples for the watchlist scorer eval (scripts/run_eval.py).
+# Add entries any time -- the eval runner picks up whatever exists here.
+# See eval/README.md for the labeling rubric this must stay consistent with
+# (scripts/fetch_and_score.py's SCORE_SYSTEM + profile/candidate_profile.md
+# are the source of truth for what each field means and how it's judged).
+#
+# STATUS: this file currently holds SYNTHETIC smoke-test examples only, written
+# by hand to exercise every metric run_eval.py computes (a clean strong match, a
+# blocker case, a weak-level-fit case, and a weak-location-fit case). They are
+# not real postings and should not be treated as evidence of real-world scorer
+# accuracy -- they exist to prove the eval mechanism itself is wired correctly.
+# Replace/supplement these with real hand-labeled examples pulled from actual
+# scored postings (see eval/README.md "adding a real example") before trusting
+# the numbers this produces as a genuine accuracy signal.
+
+schema_version: 1
+
+examples:
+  - id: gs-0001
+    added_at: "2026-09-09"
+    labeled_by: "shail"
+    synthetic: true
+    source:
+      company_name: "Synthetic Example Co"
+      job_title: "Senior Product Manager, AI Platform"
+      job_url: null
+    input:
+      title: "Senior Product Manager, AI Platform"
+      location: "Remote (US)"
+      raw_jd: |
+        We're looking for a Senior Product Manager to own our AI platform
+        team, building 0-to-1 agentic features on top of large language
+        models. You'll partner with engineering and applied research to
+        ship developer-facing AI tooling.
+
+        Requirements:
+        - 5+ years of product management or equivalent technical/adjacent
+          experience (engineering, technical PM, or related roles count)
+        - Strong technical background; comfortable reading code and
+          working directly with engineers
+        - Experience shipping developer tools or platform products a plus
+
+        This role is fully remote within the United States.
+      role_family_guess: "pm"
+    expected:
+      score_range: [95, 100]
+      role_fit: strong
+      level_fit: strong
+      location_fit: strong
+      meets_experience: true
+      blocker: false
+    rationale: >
+      Squarely in the candidate's top-priority family (AI/agentic product,
+      developer tooling) and the "5+ years PM or equivalent/technical/adjacent"
+      language is exactly the adjacency clause that makes level_fit strong per
+      the years-of-experience rule, despite the 5-year floor. Remote US ->
+      location_fit strong. No blocker language present. All-strong fit maps
+      deterministically to 75+15+10+5=105 under SCORE_SYSTEM's own formula,
+      capped at 100 -- the range allows a couple points of slack for wording
+      variance, not because the formula is actually fuzzy here. (First dry-run
+      caught this: an earlier [85, 97] label was an arithmetic mistake against
+      the documented formula, not a real ambiguity.)
+
+  - id: gs-0002
+    added_at: "2026-09-09"
+    labeled_by: "shail"
+    synthetic: true
+    source:
+      company_name: "Synthetic Defense Systems Inc"
+      job_title: "Product Manager, Mission Systems"
+      job_url: null
+    input:
+      title: "Product Manager, Mission Systems"
+      location: "Arlington, VA"
+      raw_jd: |
+        Own the roadmap for our mission-critical government systems
+        product line, working closely with program managers and engineers
+        to deliver secure, reliable software to federal customers.
+
+        Requirements:
+        - 4+ years of product management experience
+        - Must currently hold an active DoD Secret or Top Secret security
+          clearance; ability to obtain and maintain clearance required
+        - Strong communication and cross-functional leadership skills
+
+        US citizenship required for this role.
+      role_family_guess: "pm"
+    expected:
+      score_range: [0, 0]
+      role_fit: moderate
+      level_fit: strong
+      location_fit: strong
+      meets_experience: true
+      blocker: true
+    rationale: >
+      Otherwise a reasonable PM role fit-wise (4-year bar is well within
+      range, US on-site location is fine), but it explicitly requires an
+      active security clearance and US citizenship -- a hard blocker per the
+      candidate's work-authorization rule (OPT/F-1, no clearance, not a
+      citizen). The blocker guard must force the score to 0 regardless of how
+      well the rest of the JD scores.
+      (First real run: the model called level_fit "moderate," not "strong" --
+      a defensible read, since "4+ years of product management" has no
+      adjacency clause and isn't clearly inside the rubric's "~2-5 years"
+      strong bucket either. Left as-is rather than "corrected" to force
+      agreement; a labeled disagreement is a real finding, not a bug, as long
+      as it doesn't affect the guardrail check this example exists to test.)
+
+  - id: gs-0003
+    added_at: "2026-09-09"
+    labeled_by: "shail"
+    synthetic: true
+    source:
+      company_name: "Synthetic Enterprise SaaS Co"
+      job_title: "Senior Product Manager, Billing Platform"
+      job_url: null
+    input:
+      title: "Senior Product Manager, Billing Platform"
+      location: "New York, NY"
+      raw_jd: |
+        We're hiring a Senior Product Manager to lead our billing and
+        payments platform, working with a team of engineers and designers
+        to deliver reliable, scalable billing infrastructure for
+        enterprise customers.
+
+        Requirements:
+        - 7+ years of product management experience, with a proven track
+          record of shipping B2B SaaS products end to end
+        - Deep expertise in payments, billing, or fintech infrastructure
+        - Bachelor's degree required
+
+        Hybrid role based in our New York office, 3 days/week on-site.
+      role_family_guess: "pm"
+    expected:
+      score_range: [35, 55]
+      role_fit: moderate
+      level_fit: weak
+      location_fit: strong
+      meets_experience: false
+      blocker: false
+    rationale: >
+      "7+ years of product management" with no adjacency/equivalent clause is
+      a rigid pure-PM tenure bar the candidate's ~6 years of engineering +
+      product ownership doesn't cleanly clear -- level_fit weak,
+      meets_experience false, per the years-of-experience rule's explicit
+      "hard 7+ years... penalize" guidance. The level_fit=weak guard should
+      cap the score at 55 regardless of the model's raw formula output.
+      Billing/fintech is a viable-but-not-preferred domain -> role_fit
+      moderate, not strong. NY on-site is still a US location -> location_fit
+      strong (specific US cities are never penalized).
+
+  - id: gs-0004
+    added_at: "2026-09-09"
+    labeled_by: "shail"
+    synthetic: true
+    source:
+      company_name: "Synthetic Global Tech Ltd"
+      job_title: "Technical Product Manager, Developer Platform"
+      job_url: null
+    input:
+      title: "Technical Product Manager, Developer Platform"
+      location: "London, United Kingdom"
+      raw_jd: |
+        Join our developer platform team to shape the future of our API
+        and SDK products used by thousands of external developers.
+
+        Requirements:
+        - 4-6 years of product management or related technical experience
+        - Strong technical background, ideally with a CS degree or
+          engineering experience
+        - This role is based in our London office; no remote option, and
+          we are unable to sponsor relocation or visas outside the UK.
+
+        Note: applicants must already have the right to work in the UK.
+      role_family_guess: "pm"
+    expected:
+      score_range: [70, 85]
+      role_fit: strong
+      level_fit: strong
+      location_fit: weak
+      meets_experience: true
+      blocker: false
+    rationale: >
+      Developer-platform PM work is squarely in the target domain, and "4-6
+      years... or related technical experience" is an adjacency clause ->
+      level_fit strong. But the role is UK-only with no US remote option and
+      explicit non-UK sponsorship refusal -> location_fit weak per the
+      location rule (non-US, requires relocation outside the US). Note this
+      is NOT a work-authorization blocker (blocker is only about US
+      citizenship/clearance/green-card/no-sponsorship-ever for US-based
+      roles) -- it's a location mismatch, so only the -15 location_fit
+      penalty applies, not the blocker guard. This is a deliberately tricky
+      case: the formula's -15 location penalty alone doesn't tank the score
+      the way a blocker or weak level_fit would, which is worth watching for
+      in real-world disagreement analysis.
+      REAL FINDING (first live run, 2026-09-09): the model scored this 0,
+      treating "unable to sponsor relocation or visas outside the UK" as a
+      blocker. SCORE_SYSTEM's blocker rule ("green card / permanent
+      residency... no visa sponsorship, ever") never scopes "sponsorship" to
+      the US -- so the model isn't wrong given the literal prompt text, it's
+      applying a genuinely ambiguous instruction the way a text-matcher
+      would. This candidate's blocker condition is specifically about US
+      work authorization (OPT/F-1); a foreign role's own-country visa
+      language is irrelevant to that and shouldn't zero the score. Left this
+      label as-is (not a blocker) because it's the correct answer under the
+      candidate's actual constraint -- but this is a real, reproducible
+      prompt ambiguity in SCORE_SYSTEM worth fixing upstream in
+      fetch_and_score.py, not just a golden-set curiosity.
+      FIX (2026-09-09): SCORE_SYSTEM's BLOCKER clause now explicitly scopes
+      "no sponsorship" to a US-based role and explicitly instructs the model
+      not to treat a non-US role's own-country work-authorization language as
+      a blocker. IMPORTANT NUANCE: this reduces but does not eliminate the
+      bug -- it's probabilistic, not deterministic. 3 of 4 direct calls after
+      the fix correctly returned blocker=false; the official eval run
+      (scripts/run_eval.py, the 4th call) still returned blocker=true / score
+      0 on the same input. A clarified prompt makes the correct answer far
+      more likely, not guaranteed -- do not report this as "fixed" without
+      that caveat, and treat the stored eval_runs history as the honest,
+      ongoing signal of how often it still misfires.
+      SECOND FINDING, uncovered while verifying the first fix: the model's
+      own self-reported `score` field does not reliably follow the stated
+      formula once location_fit is weak. With role_fit=strong (+15),
+      level_fit=strong (+10), location_fit=weak (-15), the formula gives
+      75+15+10-15=85, but three separate calls returned raw scores of 20, 15,
+      and 25 -- the model appears to weight "wrong country" far more heavily
+      than the formula's stated -15 penalty, contradicting its own explicit
+      instructions. gs-0001 (all-strong, no location penalty) has never shown
+      this problem across any run, so the arithmetic failure looks specific
+      to the location_fit=weak path, not a general formula-following issue.
+      This is left as an intentional MISS in this golden set (score_range
+      stays [70, 85], the formula-correct answer) rather than narrowed to
+      match the model's wrong output, so the eval keeps catching it. This is
+      a separate, likely more consequential bug than the blocker issue: any
+      real production role with strong role/level fit but a non-US location
+      is probably scoring far below what the formula intends, and given the
+      board's 65 threshold, may never surface at all. Flagged for the
+      product owner to decide how to fix (e.g. stronger formula language, or
+      -- more robustly -- computing the score programmatically from the
+      returned categorical fields instead of trusting the model's self-
+      reported arithmetic); not fixed as part of this pass.

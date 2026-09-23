@@ -75,6 +75,46 @@ def is_valid_domain(tag: str) -> bool:
     return tag in DOMAIN_TAGS
 
 
+# Values the model has actually produced that are recognisably one of ours.
+# A tool-schema `enum` is a strong hint, not an enforced constraint -- observed
+# live: the model answered "product_operations" where the vocabulary says
+# "operations". Unmapped, that violates the job_facts check constraint and the
+# whole batch fails on insert.
+_REASON_ALIASES = {
+    "product_operations": "operations",
+    "product_ops": "operations",
+    "ops": "operations",
+    "program": "program_management",
+    "tpm": "program_management",
+    "marketing": "product_marketing",
+    "pmm": "product_marketing",
+    "solutions": "solutions_or_fde",
+    "fde": "solutions_or_fde",
+    "forward_deployed": "solutions_or_fde",
+    "presales": "solutions_or_fde",
+    "sales": "solutions_or_fde",
+    "product_design": "design",
+    "ux": "design",
+    "product_engineering": "engineering",
+    "software_engineering": "engineering",
+    "data": "analytics",
+    "product_analytics": "analytics",
+    "director_plus": "leadership",
+    "executive": "leadership",
+}
+
+
+def clean_exclusion_reason(reason) -> str:
+    """Map a model-supplied reason onto the vocabulary, falling back to 'other'.
+
+    Never raises and never returns something the check constraint would reject.
+    """
+    r = (reason or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if r in EXCLUSION_REASONS:
+        return r
+    return _REASON_ALIASES.get(r, "other")
+
+
 def clean_domains(tags) -> list[str]:
     """Drop anything the model invented outside the vocabulary.
 

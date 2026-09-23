@@ -254,3 +254,69 @@ select
   (select max(extracted_at) from job_facts)                           as last_classified_at;
 
 grant select on v_board_meta to anon, authenticated;
+
+-- ============================================================
+-- Classification eval.
+--
+-- Replaces sql/007's fit-score eval, which measured agreement with a rubric
+-- that no longer exists (score MAE against one candidate's profile). The only
+-- accuracy question this board has is whether a row shown as product
+-- management really is product management, so precision and recall on
+-- is_pm_role are what get stored -- and precision is the one that matters,
+-- because the board can afford to miss a role but not to show a solutions
+-- architect.
+--
+-- Per-example rows stay private, exactly as 007 intended; only the aggregate
+-- view is public.
+-- ============================================================
+create table if not exists classification_eval_runs (
+  id                  uuid primary key default gen_random_uuid(),
+  run_at              timestamptz not null default now(),
+  golden_set_version  text not null,
+  taxonomy_version    text not null,
+  model               text,
+  example_count       integer not null,
+  true_positives      integer not null default 0,
+  false_positives     integer not null default 0,
+  true_negatives      integer not null default 0,
+  false_negatives     integer not null default 0,
+  precision           numeric,
+  recall              numeric,
+  f1                  numeric,
+  accuracy            numeric,
+  reason_accuracy     numeric,   -- of correct rejections, how often the reason matched
+  notes               text
+);
+
+create table if not exists classification_eval_examples (
+  id                  uuid primary key default gen_random_uuid(),
+  run_id              uuid not null references classification_eval_runs(id) on delete cascade,
+  golden_id           text not null,
+  title               text,
+  company_name        text,
+  expected_is_pm      boolean,
+  actual_is_pm        boolean,
+  expected_reason     text,
+  actual_reason       text,
+  correct             boolean,
+  confidence          text,
+  note                text
+);
+
+create index if not exists idx_ce_examples_run on classification_eval_examples (run_id);
+
+alter table classification_eval_runs enable row level security;
+alter table classification_eval_examples enable row level security;
+
+-- Aggregate only, mirroring 005's pattern. Replaces the old fit-score view of
+-- the same name; the frontend treats a row without `precision` as "no eval yet".
+drop view if exists v_eval_latest;
+create view v_eval_latest with (security_invoker = on) as
+select
+  run_at, golden_set_version, taxonomy_version, model, example_count,
+  precision, recall, f1, accuracy, reason_accuracy
+from classification_eval_runs
+order by run_at desc
+limit 1;
+
+grant select on v_eval_latest to anon, authenticated;

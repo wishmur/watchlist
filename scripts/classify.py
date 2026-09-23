@@ -270,6 +270,18 @@ def call_model(model: str, title: str, locations: list[str], department: Optiona
 
 # ── Worklist ─────────────────────────────────────────────────────────────────
 
+def _one_of(value, vocabulary, default=None):
+    """Clamp a model-supplied value to a controlled vocabulary.
+
+    Tool-schema enums are a strong hint, not a guarantee -- the model has been
+    observed returning values outside them. Every enum-constrained column goes
+    through here so an off-vocabulary answer degrades to a default instead of
+    failing the whole batch on a check constraint.
+    """
+    v = (value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    return v if v in vocabulary else default
+
+
 def build_worklist(restale: bool, since_days: Optional[int] = None) -> list[dict]:
     """Distinct (company_id, content_hash) pairs needing extraction, newest first.
 
@@ -400,17 +412,17 @@ def main() -> int:
             "company_id": j["company_id"],
             "content_hash": j["content_hash"],
             "is_pm_role": is_pm,
-            "exclusion_reason": None if is_pm else (out.get("exclusion_reason") or "other"),
-            "confidence": out.get("confidence") or "moderate",
+            "exclusion_reason": None if is_pm else taxonomy.clean_exclusion_reason(out.get("exclusion_reason")),
+            "confidence": _one_of(out.get("confidence"), taxonomy.CONFIDENCE, "moderate"),
             "classification_note": (out.get("classification_note") or "")[:200] or None,
-            "seniority": out.get("seniority"),
+            "seniority": _one_of(out.get("seniority"), taxonomy.SENIORITY, None),
             "years_required_min": out.get("years_required_min"),
             "years_required_max": out.get("years_required_max"),
             "experience_adjacency_allowed": out.get("experience_adjacency_allowed"),
-            "technical_depth": out.get("technical_depth"),
+            "technical_depth": _one_of(out.get("technical_depth"), taxonomy.TECHNICAL_DEPTH, None),
             "domain_tags": taxonomy.clean_domains(out.get("domain_tags")),
             "company_industry": (out.get("company_industry") or None),
-            "sponsorship_mentioned": out.get("sponsorship_mentioned") or "unstated",
+            "sponsorship_mentioned": _one_of(out.get("sponsorship_mentioned"), taxonomy.SPONSORSHIP, "unstated"),
             "comp_min": out.get("comp_min"),
             "comp_max": out.get("comp_max"),
             "comp_currency": out.get("comp_currency"),

@@ -97,7 +97,9 @@ _EXCLUDE_PATTERNS: list[tuple[str, str]] = [
     ("analytics", r"\bproduct analyst\b|\bproduct development analyst\b|\bdata (analyst|scientist)\b"
                   r"|\bbusiness analyst\b|\banalytics manager\b"),
     ("operations", r"\bproduct operations\b|\bproduct ops\b|\bbizops\b|\brevops\b"),
-    ("legal_or_support", r"\bproduct counsel\b|\bproduct support\b|\bproduct specialist\b"
+    # \bcounsel\b rather than \bproduct counsel\b: live boards carry
+    # "Sr. Counsel, Product", which the narrower form misses.
+    ("legal_or_support", r"\bcounsel\b|\bproduct support\b|\bproduct specialist\b"
                          r"|\bcustomer success\b|\baccount (manager|executive)\b"),
     ("too_junior", r"\bintern\b|\binterns\b|\binternship\b|\bapprentice\b|\bapprenticeship\b"
                    r"|\bco[ -]?op\b|\bworking student\b|\bnew grad\b"),
@@ -279,12 +281,90 @@ def classify_location(location: str) -> LocationVerdict:
     return LocationVerdict(None, None, False, False)
 
 
-def should_ingest(title: str, location: str) -> bool:
+# ── Board scope: which tab a requisition belongs on ──────────────────────────
+# The board has two views, US and International. A requisition that genuinely
+# spans both -- "London, Stockholm, New York" -- appears in both rather than
+# being forced into one, because forcing it would hide the role from half the
+# audience it was posted for.
+
+INTL_COUNTRIES = ("GB", "IE", "DE", "NL", "SE", "DK")
+
+
+class ScopeVerdict(NamedTuple):
+    scope: str                      # "us" | "intl" | "both" | "unknown"
+    countries: tuple[str, ...]      # every allowed country named, deduped
+    in_scope: bool
+    remote_region: str | None
+    needs_resolution: bool          # at least one location was opaque
+
+
+def resolve_scope(locations) -> ScopeVerdict:
+    """Fold one or more raw location strings into a board scope.
+
+    Accepts the full location list for a requisition -- Workday's
+    `location` + `additionalLocations`, Ashby's `secondaryLocations`, Lever's
+    `categories.allLocations`, Greenhouse's `offices` -- so a multi-city post
+    is judged on all of them rather than on whichever one the ATS happened to
+    print first.
+    """
+    if isinstance(locations, str):
+        locations = [locations]
+    # Greenhouse packs several offices into one string ("Bellevue, Washington;
+    # Mountain View, California; ..."), so split before classifying -- otherwise
+    # a multi-country post collapses to whichever country matched first.
+    expanded: list[str] = []
+    for raw in (locations or []):
+        if not raw or not str(raw).strip():
+            continue
+        expanded.extend(part.strip() for part in re.split(r"[;|]|\s+/\s+", str(raw)) if part.strip())
+    locations = expanded
+    if not locations:
+        return ScopeVerdict("unknown", (), True, "unspecified", False)
+
+    countries: list[str] = []
+    regions: set[str] = set()
+    any_in_scope = False
+    needs_resolution = False
+
+    for loc in locations:
+        v = classify_location(loc)
+        needs_resolution |= v.needs_resolution
+        if v.in_scope:
+            any_in_scope = True
+        if v.country and v.country not in countries:
+            countries.append(v.country)
+        if v.remote_region:
+            regions.add(v.remote_region)
+
+    has_us = "US" in countries
+    has_intl = any(c in INTL_COUNTRIES for c in countries)
+
+    if has_us and has_intl:
+        scope = "both"
+    elif has_us:
+        scope = "us"
+    elif has_intl:
+        scope = "intl"
+    elif "us" in regions:
+        scope = "us"
+    elif "emea" in regions:
+        scope = "intl"
+    else:
+        # Remote with no stated region, or still-opaque. Surfacing in both tabs
+        # beats guessing and hiding it from one of them.
+        scope = "unknown"
+
+    remote_region = ("us" if "us" in regions else
+                     "emea" if "emea" in regions else
+                     "unspecified" if regions else None)
+    return ScopeVerdict(scope, tuple(countries), any_in_scope, remote_region, needs_resolution)
+
+
+def should_ingest(title: str, locations) -> bool:
     """Combined Gate 1. `uncertain` titles are ingested so Gate 2 can judge them."""
-    t = classify_title(title)
-    if t.decision == "exclude":
+    if classify_title(title).decision == "exclude":
         return False
-    return classify_location(location).in_scope
+    return resolve_scope(locations).in_scope
 
 
 # ── Self-test ────────────────────────────────────────────────────────────────
@@ -368,6 +448,27 @@ def _selftest() -> int:
         # needs a detail fetch
         ("3 Locations", None, True, True),
     ]
+    scope_cases = [
+        # (locations, scope, in_scope)
+        (["New York, NY"], "us", True),
+        (["London"], "intl", True),
+        (["London", "Stockholm"], "intl", True),
+        (["London", "Stockholm", "New York, NY"], "both", True),
+        (["Barcelona, Spain", "Lisbon, Portugal"], "unknown", False),
+        (["Barcelona, Spain", "Austin, TX"], "us", True),       # one allowed city is enough
+        (["Remote - US"], "us", True),
+        (["Remote (EMEA)"], "intl", True),
+        (["Remote"], "unknown", True),
+        ([], "unknown", True),
+        (["Bengaluru, India"], "unknown", False),
+        ("San Francisco, CA", "us", True),                       # bare string accepted
+        # Greenhouse packs multiple offices into one semicolon-joined string
+        (["Bellevue, Washington; Mountain View, California"], "us", True),
+        (["London; Berlin; New York, NY"], "both", True),
+        # a genuinely cross-continent requisition belongs on both tabs
+        (["Clearwater, Florida, United States", "Barcelona, Spain",
+          "Bodegraven, Netherlands"], "both", True),
+    ]
 
     failures = 0
     for title, want_d, want_r, want_s in title_cases:
@@ -386,7 +487,16 @@ def _selftest() -> int:
               f"in_scope={v.in_scope}/resolve={v.needs_resolution}"
               + ("" if ok else f"   WANT {want_c}/{want_scope}/{want_res}"))
 
-    total = len(title_cases) + len(loc_cases)
+    for locs, want_scope, want_in in scope_cases:
+        v = resolve_scope(locs)
+        ok = v.scope == want_scope and v.in_scope == want_in
+        failures += not ok
+        label = locs if isinstance(locs, str) else ", ".join(locs) or "(none)"
+        print(f"  [{'ok' if ok else 'FAIL'}] scope {label[:40]!r:<44} -> {v.scope}/"
+              f"{'+'.join(v.countries) or '-'}/in_scope={v.in_scope}"
+              + ("" if ok else f"   WANT {want_scope}/{want_in}"))
+
+    total = len(title_cases) + len(loc_cases) + len(scope_cases)
     print(f"\n{total - failures}/{total} passed"
           + ("  ALL PASS" if not failures else f"  {failures} FAILURE(S)"))
     return 1 if failures else 0

@@ -57,6 +57,32 @@ ANON_MUST_NOT_READ = ["companies", "jobs", "matches"]
 ANON_MUST_READ = ["v_watchlist"]
 
 
+def require(url: str, key: str, table: str, columns: list[str], migration: str) -> None:
+    """Fail fast and legibly when a migration has not been applied.
+
+    Imported by ingest.py and classify.py so they exit with a pointer to the
+    missing migration instead of a PostgREST 400 traceback.
+    """
+    try:
+        r = httpx.get(
+            f"{url}/rest/v1/{table}?select={','.join(columns)}&limit=1",
+            headers={"apikey": key, "Authorization": f"Bearer {key}"},
+            timeout=20,
+        )
+    except Exception as e:
+        raise SystemExit(f"Could not reach Supabase to verify schema: {e}")
+    if r.status_code == 200:
+        return
+    detail = r.text[:200]
+    raise SystemExit(
+        f"\nSchema check failed: {table} is missing columns this script needs.\n"
+        f"  expected: {', '.join(columns)}\n"
+        f"  server:   HTTP {r.status_code} {detail}\n\n"
+        f"Apply {migration} in the Supabase SQL editor first, then re-run.\n"
+        f"Verify with: python scripts/check_schema.py\n"
+    )
+
+
 class Result:
     def __init__(self) -> None:
         self.failures: list[str] = []

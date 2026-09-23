@@ -185,6 +185,10 @@ def fetch_greenhouse_jd(job_id: str, slug: str) -> str:
 
 
 def fetch_ashby(slug: str) -> list[dict]:
+    # Ashby's posting-api returns {"jobs": [...]} with job.location -- it was once
+    # {"jobPostings": [...]} with job.locationName. An unrecognized key yields []
+    # rather than raising, so this failed silently: 21 seeded Ashby companies
+    # produced 0 board rows while the logs looked clean.
     url = f"https://api.ashbyhq.com/posting-api/job-board/{slug}"
     try:
         r = httpx.get(url, timeout=20)
@@ -193,12 +197,12 @@ def fetch_ashby(slug: str) -> list[dict]:
             {
                 "ats_job_id": j.get("id", ""),
                 "title":      j.get("title", ""),
-                "location":   j.get("locationName", ""),
+                "location":   j.get("location", ""),
                 "url":        j.get("jobUrl", ""),
                 "posted_at":  j.get("publishedAt"),
                 "raw_jd":     _strip_html(j.get("descriptionHtml", "")),
             }
-            for j in r.json().get("jobPostings", [])
+            for j in r.json().get("jobs", [])
             if j.get("isListed") is not False
         ]
     except Exception as e:

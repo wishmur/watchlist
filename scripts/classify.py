@@ -37,10 +37,10 @@ This is the path the old design lacked entirely: nothing was ever re-scored, so
 a prompt fix only ever affected postings first seen afterwards.
 
 Usage:
-    python scripts/classify.py                 # classify pending work
-    python scripts/classify.py --dry-run       # cost estimate, no API calls
-    python scripts/classify.py --limit 50
-    python scripts/classify.py --restale       # include stale-version rows
+    python3 scripts/classify.py                 # classify pending work
+    python3 scripts/classify.py --dry-run       # cost estimate, no API calls
+    python3 scripts/classify.py --limit 50
+    python3 scripts/classify.py --restale       # include stale-version rows
 """
 
 from __future__ import annotations

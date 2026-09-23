@@ -23,9 +23,9 @@ company, and a job must be missing from CLOSE_AFTER_MISSES consecutive
 SUCCESSFUL fetches before it is closed. A job that reappears resets the counter.
 
 Usage:
-    python scripts/ingest.py --dry-run
-    python scripts/ingest.py --ats greenhouse ashby
-    python scripts/ingest.py --limit 50
+    python3 scripts/ingest.py --dry-run
+    python3 scripts/ingest.py --ats greenhouse ashby
+    python3 scripts/ingest.py --limit 50
 """
 
 from __future__ import annotations

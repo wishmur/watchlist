@@ -20,9 +20,9 @@ Calls the real production path (classify.call_model with the real tool schema
 and system prompt), never a reimplementation, so a prompt change shows up here.
 
 Usage:
-    python scripts/run_eval.py --dry-run     # show the set, make no API calls
-    python scripts/run_eval.py               # run and write results
-    python scripts/run_eval.py --no-write    # run, print, write nothing
+    python3 scripts/run_eval.py --dry-run     # show the set, make no API calls
+    python3 scripts/run_eval.py               # run and write results
+    python3 scripts/run_eval.py --no-write    # run, print, write nothing
 """
 
 from __future__ import annotations

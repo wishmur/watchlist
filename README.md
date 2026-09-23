@@ -48,7 +48,7 @@ plausible-looking `\b(senior|staff|principal) product\b` pattern silently admits
 both observed live, and together about 6% of apparent PM roles.
 
 ```bash
-python scripts/filters.py --selftest     # 76 cases, offline
+python3 scripts/filters.py --selftest     # 76 cases, offline
 ```
 
 **Gate 2 — `classify.py`.** One Haiku call per distinct posting content, keyed
@@ -94,8 +94,8 @@ Precision is the headline. This board can afford to miss a role; it cannot
 afford to tell someone a solutions architect job is product management.
 
 ```bash
-python scripts/run_eval.py --dry-run     # cost estimate, no API calls
-python scripts/run_eval.py --no-write    # run, print, persist nothing
+python3 scripts/run_eval.py --dry-run     # cost estimate, no API calls
+python3 scripts/run_eval.py --no-write    # run, print, persist nothing
 ```
 
 ## Setup
@@ -113,7 +113,7 @@ sql/008_pm_board_v1.sql             -- job_facts, board views, eval tables
 but was never applied, and `008` replaces it. Verify what is actually live:
 
 ```bash
-python scripts/check_schema.py
+python3 scripts/check_schema.py
 ```
 
 > **Resolved 2026-09-23.** For a period this README claimed `sql/005` was
@@ -152,11 +152,36 @@ so `check_schema.py` can verify the public read surface from the outside.
 ```bash
 pip install -r requirements.txt
 
-python scripts/ingest.py --dry-run --limit 20        # fetch + screen, write nothing
-python scripts/classify.py --dry-run                 # worklist + cost estimate
-python scripts/classify.py --since-days 7            # launch backfill
-python scripts/classify.py --restale                 # re-extract stale versions
+python3 scripts/ingest.py --dry-run --limit 20        # fetch + screen, write nothing
+python3 scripts/classify.py --dry-run                 # worklist + cost estimate
+python3 scripts/classify.py --since-days 7            # launch backfill
+python3 scripts/classify.py --restale                 # re-extract stale versions
 ```
+
+### Order matters: ingest before classify
+
+`v_jobs_public` requires `jobs.board_scope`, which only `ingest.py` sets. Rows
+that predate it have it `NULL` and will not appear on the board no matter how
+many of them are classified.
+
+`content_hash` is the sharper trap. `sql/008` backfilled it from whatever
+`raw_jd` happened to be stored at migration time, but `ingest.py` re-fetches
+descriptions and recomputes the hash from the fresh text — Greenhouse in
+particular now comes from a different endpoint. The two hashes do not match, so
+`job_facts` rows written before an ingest are keyed to content that no longer
+exists: orphaned, invisible, and paid for.
+
+Classification is the only step that costs money, so getting this backwards is
+the one sequencing mistake with a bill attached.
+
+```bash
+python3 scripts/ingest.py                  # free; populates board_scope + content_hash
+python3 scripts/classify.py --since-days 7 # then spend
+```
+
+A full ingest across ~2,700 companies takes roughly two hours of HTTP. Run it
+in slices with `--limit` if you would rather not hold a terminal open, or let
+`board.yml` do it on schedule — it runs both stages in the right order.
 
 ## ATS notes
 

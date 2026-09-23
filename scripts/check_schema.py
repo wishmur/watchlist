@@ -20,8 +20,8 @@ file is committed; it is done when the live project agrees.
 
 Usage
 -----
-    python scripts/check_schema.py              # full check, exits non-zero on failure
-    python scripts/check_schema.py --warn-only  # report but always exit 0
+    python3 scripts/check_schema.py              # full check, exits non-zero on failure
+    python3 scripts/check_schema.py --warn-only  # report but always exit 0
 
 Needs SUPABASE_URL plus a key. Pass the service key to check everything; the
 anon-exposure checks additionally need SUPABASE_ANON_KEY to be meaningful.
@@ -107,7 +107,7 @@ def require(url: str, key: str, table: str, columns: list[str], migration: str) 
         f"  expected: {', '.join(columns)}\n"
         f"  server:   HTTP {r.status_code} {detail}\n\n"
         f"Apply {migration} in the Supabase SQL editor first, then re-run.\n"
-        f"Verify with: python scripts/check_schema.py\n"
+        f"Verify with: python3 scripts/check_schema.py\n"
     )
 
 

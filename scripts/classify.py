@@ -291,9 +291,22 @@ def build_worklist(restale: bool, since_days: Optional[int] = None) -> list[dict
     log.info("loading open jobs ...")
     jobs = sb_get("jobs", "select=id,company_id,content_hash,title,locations,department,"
                           "raw_jd,posted_at,first_seen_at,title_decision&status=eq.open")
-    # Gate 1 already rejected 'exclude'; those rows should not exist here, but
-    # be defensive -- an old row predating Gate 1 would otherwise cost a call.
-    jobs = [j for j in jobs if j.get("title_decision") != "exclude"]
+
+    # Rows written by the old PM+FDE pipeline carry title_decision = NULL, so a
+    # plain `!= 'exclude'` test lets every Forward Deployed Engineer and
+    # Solutions Engineer in the back catalogue through -- each one a paid call
+    # for a role the board will never show. Re-run Gate 1 on anything unlabelled
+    # rather than trusting a column the old pipeline never populated.
+    before = len(jobs)
+    kept = []
+    for j in jobs:
+        decision = j.get("title_decision") or classify_title(j["title"]).decision
+        if decision != "exclude":
+            kept.append(j)
+    if before != len(kept):
+        log.info(f"Gate 1 screened out {before - len(kept)} unlabelled legacy rows "
+                 f"({len(kept)} remain)")
+    jobs = kept
 
     facts = sb_get("job_facts", "select=company_id,content_hash,taxonomy_version,extraction_model")
     done = {}

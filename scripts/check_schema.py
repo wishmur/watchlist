@@ -39,13 +39,38 @@ ANON_KEY = os.getenv("SUPABASE_ANON_KEY") or ""
 # Relations the pipeline and frontend depend on, with the columns actually read.
 # Keep this in step with src/lib/watchlist/queries.ts in the frontend repo.
 REQUIRED = {
+    "companies": ["id", "name", "ats_type", "ats_slug", "tier", "active"],
+    "jobs": [
+        "id", "company_id", "ats_job_id", "title", "location", "url",
+        "status", "first_seen_at", "last_seen_at",
+        # sql/008
+        "content_hash", "locations", "countries", "board_scope", "remote_region",
+        "department", "team", "employment_type", "workplace_type", "is_remote",
+        "comp_min", "comp_max", "comp_currency",
+        "title_decision", "title_reason", "seniority", "missed_runs", "closed_at",
+    ],
+    "job_facts": [
+        "company_id", "content_hash", "is_pm_role", "exclusion_reason", "confidence",
+        "seniority", "years_required_min", "technical_depth", "domain_tags",
+        "sponsorship_mentioned", "taxonomy_version", "extraction_model", "extracted_at",
+    ],
+    "pipeline_runs": ["id", "stage", "started_at", "classify_calls", "estimated_usd",
+                      "hit_call_cap", "hit_budget_cap"],
+    "classification_eval_runs": ["id", "run_at", "golden_set_version", "taxonomy_version",
+                                 "example_count", "precision", "recall"],
+    # The board's public surface.
+    "v_jobs_public": ["job_id", "company_name", "title", "job_url", "locations",
+                      "countries", "board_scope", "seniority", "domain_tags",
+                      "posted_at", "completeness"],
+    "v_jobs_us": ["job_id", "board_scope"],
+    "v_jobs_intl": ["job_id", "board_scope"],
+    "v_board_meta": ["open_roles", "us_roles", "intl_roles", "companies"],
+    "v_eval_latest": ["run_at", "precision", "recall"],
+    # Legacy, still serving the old board until the cutover.
     "v_watchlist": [
         "job_id", "company_name", "job_title", "location", "job_url",
         "posted_at", "first_seen_at", "job_status", "score", "reasoning",
     ],
-    "companies": ["id", "name", "ats_type", "ats_slug", "tier", "active"],
-    "jobs": ["id", "company_id", "ats_job_id", "title", "location", "url",
-             "status", "first_seen_at", "last_seen_at"],
     "matches": ["id", "job_id", "score", "scored_at"],
 }
 
@@ -54,7 +79,7 @@ REQUIRED = {
 ANON_MUST_NOT_READ = ["companies", "jobs", "matches"]
 
 # Relations anon is expected to read (the entire intended public surface).
-ANON_MUST_READ = ["v_watchlist"]
+ANON_MUST_READ = ["v_jobs_us", "v_jobs_intl", "v_board_meta", "v_watchlist"]
 
 
 def require(url: str, key: str, table: str, columns: list[str], migration: str) -> None:

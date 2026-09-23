@@ -1,11 +1,17 @@
-name: Watchlist — daily job fetch + score
+# RETIRED — superseded by board.yml, which runs ingest + classify at 6:30 AM PT.
+#
+# The schedule is removed rather than the file, so this stays runnable by hand
+# if the new pipeline ever needs comparing against it. Leaving the cron would
+# have run the old two-tier fit scorer every morning alongside the new
+# pipeline: Haiku + Sonnet calls against profile/candidate_profile.md, writing
+# `matches` rows nothing reads any more — a daily Anthropic bill for output the
+# board does not use.
+#
+# fetch_and_score.py is unchanged and still works. Delete both once the new
+# pipeline has a few clean runs behind it.
+name: Watchlist — daily job fetch + score (RETIRED)
 
 on:
-  schedule:
-    # 14:00 UTC = 7:00 AM Pacific (PDT) / 6:00 AM (PST).
-    # Runs an hour after the discovery workflow (expand.yml, 6 AM PT) so newly
-    # discovered companies are already in Supabase when this scores.
-    - cron: "0 14 * * *"
   workflow_dispatch:
 
 jobs:

@@ -64,7 +64,7 @@ with a rubric that no longer exists.
    labeling toward it defeats the point).
 4. Set `synthetic: false` (or omit the field -- it defaults to not-synthetic)
    and give it the next `gs-NNNN` id.
-5. Run `python scripts/run_eval.py --dry-run` first to sanity-check the file
+5. Run `python3 scripts/run_eval.py --dry-run` first to sanity-check the file
    parses, then a real run to see how the model actually did against it.
 
 ## Running
@@ -72,12 +72,12 @@ with a rubric that no longer exists.
 ```bash
 # From the shay-watchlist repo root, with ANTHROPIC_API_KEY set (and
 # SUPABASE_URL / SUPABASE_SERVICE_KEY set unless --dry-run):
-python scripts/run_eval.py
+python3 scripts/run_eval.py
 
 # --dry-run skips writing results to Supabase (still calls the real model --
 # this is not a mocked run, just a non-persisting one). Useful while iterating
 # on golden_set.yaml or run_eval.py itself without touching production data.
-python scripts/run_eval.py --dry-run
+python3 scripts/run_eval.py --dry-run
 ```
 
 Each run calls the model the same way production's escalation logic would --

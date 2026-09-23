@@ -32,6 +32,9 @@ import sys
 
 import httpx
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import local_env  # noqa: F401,E402  -- loads .env for local runs
+
 SUPABASE_URL = (os.getenv("SUPABASE_URL") or "").rstrip("/")
 SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY") or ""
 ANON_KEY = os.getenv("SUPABASE_ANON_KEY") or ""

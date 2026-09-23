@@ -28,8 +28,10 @@ Output:   new_companies.sql — review it, then run in the Supabase SQL editor
 import argparse, asyncio, csv, os, re, sys
 import httpx
 
-# Title classification (PM + FDE families) and the US-wide location filter are
-# imported from filters.py so discovery and the daily scorer use identical rules.
+import local_env  # noqa: F401  -- loads .env for local runs
+
+# Gate 1 is imported from filters.py so discovery and ingestion apply identical
+# rules: core PM titles only, across the seven-country allowlist.
 from filters import classify_title, classify_location
 
 

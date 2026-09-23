@@ -116,12 +116,19 @@ but was never applied, and `008` replaces it. Verify what is actually live:
 python scripts/check_schema.py
 ```
 
-> **`sql/005` is not applied on the live project.** This README previously
-> claimed it was. Probing with the public anon key returns rows from
-> `companies`, `jobs` and `matches` — every score ever computed, including
-> rejects whose `reasoning` text is candidate-specific, plus the full `raw_jd`
-> of every posting. `check_schema.py` fails on exactly this. Apply `005`, and
-> rotate the publishable key, which is in git history.
+> **Resolved 2026-09-23.** For a period this README claimed `sql/005` was
+> applied when it was not, and the public anon key could read `companies`,
+> `jobs` and `matches` directly — every score ever computed, including rejects
+> whose `reasoning` text was candidate-specific, plus the full `raw_jd` of
+> every posting. `005` and `008` are now applied and `check_schema.py` passes
+> 19/19, including the assertion that anon is blocked from all three raw tables.
+>
+> To be clear about what the problem was: **not** that the publishable key is
+> public. It is supposed to be — it ships in the frontend bundle by design and
+> is gated by RLS. The problem was that RLS granted it more than it should have
+> had. Fixing the policy fixed it; the key does not need rotating, and a new
+> one would carry identical permissions. No secret key has ever been committed
+> to either repo.
 
 ### Secrets
 
@@ -130,6 +137,15 @@ python scripts/check_schema.py
 | `SUPABASE_URL` | Supabase → Project Settings → API |
 | `SUPABASE_SERVICE_KEY` | same page, service_role (not anon) |
 | `ANTHROPIC_API_KEY` | console.anthropic.com |
+
+`board.yml` uses the same three names as the existing workflows, so no new
+repo secrets are needed.
+
+Locally, copy `.env.example` to `.env` and fill it in — `scripts/local_env.py`
+loads it automatically, so there is no need to `source` anything first. Real
+environment variables always win over the file, which is how Actions supplies
+these from secrets. `SUPABASE_ANON_KEY` is optional and is not a secret; set it
+so `check_schema.py` can verify the public read surface from the outside.
 
 ## Running locally
 

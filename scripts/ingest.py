@@ -44,6 +44,8 @@ import httpx
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import local_env  # noqa: F401  -- loads .env for local runs
+
 import ats
 from filters import classify_title, resolve_scope
 

@@ -1,12 +1,11 @@
-# Public PM board: ingest, then classify.
+# Public PM board: ingest, then classify. This is the live pipeline;
+# main.yml's schedule was retired when this one landed.
 #
-# NOT LIVE until this file is on the default branch. main.yml (the old
-# fetch+score pipeline) is still the scheduled job and is left untouched;
-# retiring it is a separate, deliberate step.
-#
-# Two stages in one workflow, in order, because classify.py only has work to do
-# once ingest.py has written rows. Splitting them into separate schedules would
-# mean guessing how long ingestion takes.
+# Two stages in one workflow, in order, because classify.py only has work once
+# ingest.py has written rows. Splitting them across schedules would mean
+# guessing how long ingestion takes — and getting it backwards costs money:
+# job_facts rows written before an ingest are keyed to a content_hash the
+# ingest then replaces, so they are orphaned and paid for twice.
 #
 # Cost shape: ingest makes zero model calls, so it can run as wide as it likes.
 # All spend is in classify, bounded by MAX_CLASSIFY_CALLS and RUN_BUDGET_USD
@@ -28,6 +27,10 @@ on:
         description: "Max companies to ingest (0 = all)"
         type: string
         default: "0"
+      ingest_budget_min:
+        description: "Stop ingest after this many minutes so classify still runs"
+        type: string
+        default: "100"
       max_classify_calls:
         description: "Hard cap on model calls this run"
         type: string
@@ -75,11 +78,17 @@ jobs:
       # Fails loudly if a migration has not been applied, rather than letting
       # the run half-succeed against a schema that does not match the code.
       - name: Verify schema
-        run: python scripts/check_schema.py
+        run: python3 scripts/check_schema.py
 
+      # The budget is what guarantees classification gets to run. A full pass
+      # over ~2,700 companies measures at ~210 minutes, past this job's
+      # timeout-minutes; without it the run is killed mid-ingest and the board
+      # stays empty. 100 + classification leaves comfortable headroom.
       - name: Ingest
+        env:
+          INGEST_TIME_BUDGET_MIN: ${{ inputs.ingest_budget_min || '100' }}
         run: |
-          python scripts/ingest.py \
+          python3 scripts/ingest.py \
             --ats ${{ inputs.ats || 'greenhouse ashby lever workday' }} \
             --limit ${{ inputs.company_limit || '0' }} \
             ${{ inputs.dry_run && '--dry-run' || '' }}
@@ -90,13 +99,13 @@ jobs:
           MAX_CLASSIFY_CALLS: ${{ inputs.max_classify_calls || '1500' }}
           RUN_BUDGET_USD: ${{ inputs.run_budget_usd || '3.00' }}
         run: |
-          python scripts/classify.py \
+          python3 scripts/classify.py \
             ${{ inputs.since_days && format('--since-days {0}', inputs.since_days) || '' }}
 
       - name: Report spend
         if: ${{ always() && !inputs.dry_run }}
         run: |
-          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import os, httpx
           url = os.environ["SUPABASE_URL"].rstrip("/")
           key = os.environ["SUPABASE_SERVICE_KEY"]

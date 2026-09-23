@@ -66,7 +66,16 @@ vocabulary before insert, or one bad value fails the whole batch.
 |---|---|---|
 | Hard call budget | `MAX_CLASSIFY_CALLS` | 1500 |
 | Token-spend abort | `RUN_BUDGET_USD` | $3.00 |
+| Ingest wall clock | `INGEST_TIME_BUDGET_MIN` | 100 |
 | Accounting | `pipeline_runs` table | — |
+
+`INGEST_TIME_BUDGET_MIN` is not a cost control — ingestion is free — it is what
+keeps the *other* controls reachable. At ~4.6s per company a full pass over
+~2,700 companies runs about 210 minutes, past `board.yml`'s job timeout. Killed
+mid-ingest, the classify step never executes and the morning ends with an empty
+board. Ingest instead stops on its own and hands the runner over. Companies are
+shuffled with never-seen ones first, so successive runs converge on full
+coverage rather than re-walking the same head of the list.
 
 Ingestion is free — it makes no model calls — so it runs wide. All spend is in
 classification. An unpriced model raises rather than running uncapped.

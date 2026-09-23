@@ -76,6 +76,20 @@ FIRST_RUN_DAYS = int(os.getenv("FIRST_RUN_DAYS", "60"))
 CLOSE_AFTER_MISSES = int(os.getenv("CLOSE_AFTER_MISSES", "2"))
 MAX_JD_CHARS = int(os.getenv("MAX_JD_CHARS", "20000"))
 
+# Wall-clock budget, so a long ingest yields the runner to classification
+# rather than being killed by the workflow timeout.
+#
+# Measured at ~4.6s per company including hydration, a full pass over ~2,700
+# companies is about 210 minutes -- longer than board.yml's 180-minute job
+# timeout. Without a budget the run is killed mid-ingest and the classify step
+# never executes, so the morning ends with an empty board rather than a
+# partial one.
+#
+# Stopping early is cheap here: companies are shuffled with never-seen ones
+# first, so consecutive runs converge on full coverage instead of re-walking
+# the same head of the list.
+INGEST_TIME_BUDGET_MIN = int(os.getenv("INGEST_TIME_BUDGET_MIN", "100"))
+
 
 def _headers() -> dict:
     return {
@@ -267,17 +281,37 @@ def main() -> int:
 
     totals = {"listed": 0, "kept": 0, "upserted": 0, "failed": 0, "closed": 0}
     started = time.time()
+    budget_s = INGEST_TIME_BUDGET_MIN * 60
+    processed = 0
+    out_of_time = False
+
     for n, co in enumerate(ordered, 1):
+        if budget_s and (time.time() - started) > budget_s:
+            log.warning(
+                f"time budget of {INGEST_TIME_BUDGET_MIN}min reached after {n-1} companies; "
+                f"stopping so classification still gets to run"
+            )
+            log.warning(
+                f"{len(ordered) - (n-1)} companies deferred — never-seen ones are ordered "
+                f"first, so the next run picks up where this left off"
+            )
+            out_of_time = True
+            break
         s = process_company(co, co["id"] in known, args.dry_run)
+        processed = n
         for k in totals:
             totals[k] += s[k]
         if n % 50 == 0:
+            mins = (time.time() - started) / 60
             log.info(f"  {n}/{len(ordered)} companies  kept={totals['kept']}  "
-                     f"failed={totals['failed']}")
+                     f"failed={totals['failed']}  {mins:.0f}min elapsed")
         time.sleep(0.2)
 
     elapsed = int(time.time() - started)
-    log.info(f"done in {elapsed}s: listed={totals['listed']} kept={totals['kept']} "
+    log.info(f"done in {elapsed//60}m{elapsed%60:02d}s: "
+             f"companies={processed}/{len(ordered)}"
+             f"{' (TIME BUDGET)' if out_of_time else ''} "
+             f"listed={totals['listed']} kept={totals['kept']} "
              f"upserted={totals['upserted']} closed={totals['closed']} "
              f"failed_companies={totals['failed']}")
     if totals["failed"]:
@@ -289,11 +323,13 @@ def main() -> int:
             sb_upsert("pipeline_runs", [{
                 "stage": "ingest",
                 "finished_at": datetime.now(timezone.utc).isoformat(),
-                "companies_seen": len(ordered),
+                "companies_seen": processed,
                 "companies_failed": totals["failed"],
                 "postings_listed": totals["listed"],
                 "jobs_upserted": totals["upserted"],
                 "jobs_closed": totals["closed"],
+                "notes": (f"time budget hit after {processed}/{len(ordered)} companies"
+                          if out_of_time else None),
             }], "id")
         except Exception as e:
             log.warning(f"could not record pipeline_run: {e}")

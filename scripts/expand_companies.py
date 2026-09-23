@@ -30,7 +30,20 @@ import httpx
 
 # Title classification (PM + FDE families) and the US-wide location filter are
 # imported from filters.py so discovery and the daily scorer use identical rules.
-from filters import classify_role, is_us_location
+from filters import classify_title, classify_location
+
+
+def _is_target_role(title: str, location: str) -> bool:
+    """Discovery gate: does this posting justify adding the company to the corpus?
+
+    Deliberately accepts `uncertain` as well as `include` -- a company with an
+    ambiguous product title is still worth tracking, and Gate 2 sorts out the
+    individual posting later. Discovery makes no LLM calls, so a false positive
+    here costs one HTTP round-trip a day, not money.
+    """
+    if classify_title(title).decision == "exclude":
+        return False
+    return classify_location(location).in_scope
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
 WORKDAY_URL_RE = re.compile(r"^https://([\w-]+)\.(wd\d+)\.myworkdayjobs\.com/([\w./-]+)$", re.I)
@@ -117,24 +130,26 @@ async def check_greenhouse(client, slug, sem):
         for p in postings:
             title = p.get("title") or ""
             loc = (p.get("location") or {}).get("name", "")
-            if classify_role(title) is not None and is_us_location(loc):
+            if _is_target_role(title, loc):
                 return title
         return None
 
 
 async def check_ashby(client, slug, sem):
+    # Response shape is {"jobs": [...]} with job.location (not jobPostings /
+    # locationName) -- see the matching fix in fetch_and_score.py.
     async with sem:
         try:
             r = await client.get(f"https://api.ashbyhq.com/posting-api/job-board/{slug}", timeout=15)
             if r.status_code != 200:
                 return None
-            postings = r.json().get("jobPostings", [])
+            postings = r.json().get("jobs", [])
         except Exception:
             return None
         for p in postings:
             title = p.get("title") or ""
-            loc = p.get("locationName", "")
-            if classify_role(title) is not None and is_us_location(loc):
+            loc = p.get("location", "")
+            if _is_target_role(title, loc):
                 return title
         return None
 
@@ -153,14 +168,19 @@ async def check_lever(client, slug, sem):
         for p in postings:
             title = p.get("text") or ""
             loc = (p.get("categories") or {}).get("location", "")
-            if classify_role(title) is not None and is_us_location(loc):
+            if _is_target_role(title, loc):
                 return title
         return None
 
 
 async def check_workday(client, slug, sem):
     """slug is 'wd{N}/{tenant}/{site}'. Only checks the first page (20 postings) —
-    enough to detect whether a PM role exists without paginating every tenant."""
+    enough to detect whether a PM role exists without paginating every tenant.
+
+    searchText matters a great deal here. With the empty string Workday returns
+    the head of the whole board in no useful order, so a tenant with 2,000 open
+    reqs shows 20 warehouse jobs and looks like it has no PM roles. Measured over
+    59 live tenants, "product manager" recalls 95% of PM titles in one query."""
     async with sem:
         try:
             wd_host, tenant, site = slug.split("/", 2)
@@ -170,7 +190,8 @@ async def check_workday(client, slug, sem):
         try:
             r = await client.post(
                 api_url,
-                json={"appliedFacets": {}, "limit": 20, "offset": 0, "searchText": ""},
+                json={"appliedFacets": {}, "limit": 20, "offset": 0,
+                      "searchText": "product manager"},
                 headers={"content-type": "application/json"},
                 timeout=15,
             )
@@ -182,7 +203,7 @@ async def check_workday(client, slug, sem):
         for p in postings:
             title = p.get("title") or ""
             loc = p.get("locationsText", "")
-            if classify_role(title) is not None and is_us_location(loc):
+            if _is_target_role(title, loc):
                 return title
         return None
 

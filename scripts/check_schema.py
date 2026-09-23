@@ -30,6 +30,8 @@ anon-exposure checks additionally need SUPABASE_ANON_KEY to be meaningful.
 import os
 import sys
 
+from typing import Optional
+
 import httpx
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -138,6 +140,25 @@ def _get(rel: str, key: str, params: str = "select=*&limit=1") -> httpx.Response
     )
 
 
+def _count(rel: str, key: str) -> Optional[int]:
+    """Exact row count as the given key sees it, or None if unreadable."""
+    r = httpx.get(
+        f"{SUPABASE_URL}/rest/v1/{rel}?select=*",
+        headers={
+            "apikey": key,
+            "Authorization": f"Bearer {key}",
+            "Prefer": "count=exact",
+            "Range": "0-0",
+        },
+        timeout=20,
+    )
+    if r.status_code not in (200, 206):
+        return None
+    rng = r.headers.get("content-range", "")
+    total = rng.split("/")[-1] if "/" in rng else ""
+    return int(total) if total.isdigit() else 0
+
+
 def check_relations(r: Result) -> None:
     print("\nRelations and columns (service key):")
     for rel, cols in REQUIRED.items():
@@ -164,16 +185,28 @@ def check_anon_exposure(r: Result) -> None:
                "These are the ones that catch sql/005-class drift; set it in CI.")
         return
 
+    # Row counts, not status codes. The original version of this check asserted
+    # only HTTP 200 and so reported all-green while every board view returned
+    # an empty set to anon: the views were security_invoker=on over base tables
+    # whose anon SELECT sql/005 had revoked, which yields zero rows and no
+    # error. A 200 proves the door opened, not that anything is behind it.
     for rel in ANON_MUST_READ:
         try:
-            resp = _get(rel, ANON_KEY)
+            anon_n = _count(rel, ANON_KEY)
+            svc_n = _count(rel, SERVICE_KEY)
         except Exception as e:
             r.fail(f"anon {rel}: request failed ({e})")
             continue
-        if resp.status_code == 200:
-            r.ok(f"anon can read {rel} (required by the frontend)")
+        if anon_n is None:
+            r.fail(f"anon cannot read {rel} -- the board will be empty")
+        elif svc_n and anon_n == 0:
+            r.fail(f"anon reads {rel} but gets 0 rows while service_role sees {svc_n}. "
+                   f"The view is invisible to visitors -- check security_invoker "
+                   f"against the base-table grants (see sql/009).")
+        elif svc_n == 0:
+            r.warn(f"{rel} is empty for everyone ({anon_n} rows) -- no data yet, not a grant problem")
         else:
-            r.fail(f"anon cannot read {rel} (HTTP {resp.status_code}) -- the board will be empty")
+            r.ok(f"anon reads {rel}: {anon_n} rows (service_role sees {svc_n})")
 
     for rel in ANON_MUST_NOT_READ:
         try:

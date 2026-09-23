@@ -352,8 +352,11 @@ def build_worklist(restale: bool, since_days: Optional[int] = None) -> list[dict
 
 def estimate_usd(n: int) -> float:
     pi, po = PRICES[MODEL]
-    # ~2.0k in (system + schema + truncated JD), ~0.25k out, measured empirically.
-    return n * ((2000 / 1e6) * pi + (250 / 1e6) * po)
+    # Measured against a real 639-call production run: $3.0017 total, so
+    # ~$0.0047 per call. An earlier 2.0k-in/250-out guess predicted $0.0023 and
+    # understated a full run by about half -- real postings carry longer JDs
+    # than the estimate assumed. Numbers below are back-solved from that run.
+    return n * ((4200 / 1e6) * pi + (330 / 1e6) * po)
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────

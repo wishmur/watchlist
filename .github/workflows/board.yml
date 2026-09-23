@@ -1,0 +1,122 @@
+# Public PM board: ingest, then classify.
+#
+# NOT LIVE until this file is on the default branch. main.yml (the old
+# fetch+score pipeline) is still the scheduled job and is left untouched;
+# retiring it is a separate, deliberate step.
+#
+# Two stages in one workflow, in order, because classify.py only has work to do
+# once ingest.py has written rows. Splitting them into separate schedules would
+# mean guessing how long ingestion takes.
+#
+# Cost shape: ingest makes zero model calls, so it can run as wide as it likes.
+# All spend is in classify, bounded by MAX_CLASSIFY_CALLS and RUN_BUDGET_USD
+# and recorded to pipeline_runs.
+name: Board — ingest + classify
+
+on:
+  schedule:
+    # 6:30 AM PT. Fixed UTC, so an hour earlier in winter; still well before
+    # anyone is reading the board.
+    - cron: "30 13 * * *"
+  workflow_dispatch:
+    inputs:
+      ats:
+        description: "Which ATS platforms to ingest"
+        type: string
+        default: "greenhouse ashby lever workday"
+      company_limit:
+        description: "Max companies to ingest (0 = all)"
+        type: string
+        default: "0"
+      max_classify_calls:
+        description: "Hard cap on model calls this run"
+        type: string
+        default: "1500"
+      run_budget_usd:
+        description: "Abort classification above this spend"
+        type: string
+        default: "3.00"
+      since_days:
+        description: "Only classify postings this recent (blank = all pending)"
+        type: string
+        default: ""
+      dry_run:
+        description: "Fetch and screen, write nothing"
+        type: boolean
+        default: false
+
+# One run at a time. The previous workflows had no concurrency group, so a
+# manual dispatch could overlap the cron and both would write.
+concurrency:
+  group: board-pipeline
+  cancel-in-progress: false
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # requirements.txt, not a bare `pip install httpx` -- the old workflows
+      # installed httpx only, so pyyaml was missing and run_eval.py could not
+      # run in CI at all.
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Fails loudly if a migration has not been applied, rather than letting
+      # the run half-succeed against a schema that does not match the code.
+      - name: Verify schema
+        run: python scripts/check_schema.py
+
+      - name: Ingest
+        run: |
+          python scripts/ingest.py \
+            --ats ${{ inputs.ats || 'greenhouse ashby lever workday' }} \
+            --limit ${{ inputs.company_limit || '0' }} \
+            ${{ inputs.dry_run && '--dry-run' || '' }}
+
+      - name: Classify
+        if: ${{ !inputs.dry_run }}
+        env:
+          MAX_CLASSIFY_CALLS: ${{ inputs.max_classify_calls || '1500' }}
+          RUN_BUDGET_USD: ${{ inputs.run_budget_usd || '3.00' }}
+        run: |
+          python scripts/classify.py \
+            ${{ inputs.since_days && format('--since-days {0}', inputs.since_days) || '' }}
+
+      - name: Report spend
+        if: ${{ always() && !inputs.dry_run }}
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import os, httpx
+          url = os.environ["SUPABASE_URL"].rstrip("/")
+          key = os.environ["SUPABASE_SERVICE_KEY"]
+          h = {"apikey": key, "Authorization": f"Bearer {key}"}
+          try:
+              runs = httpx.get(
+                  f"{url}/rest/v1/pipeline_runs?select=*&order=started_at.desc&limit=2",
+                  headers=h, timeout=30).json()
+          except Exception as e:
+              print(f"Could not read pipeline_runs: {e}")
+              raise SystemExit(0)
+          print("## Pipeline run\n")
+          print("| stage | jobs | calls | tokens in/out | spend | capped |")
+          print("|---|---|---|---|---|---|")
+          for r in runs:
+              capped = []
+              if r.get("hit_call_cap"): capped.append("calls")
+              if r.get("hit_budget_cap"): capped.append("budget")
+              print(f"| {r.get('stage')} | {r.get('jobs_upserted', 0)} | "
+                    f"{r.get('classify_calls', 0)} | {r.get('input_tokens', 0)}/"
+                    f"{r.get('output_tokens', 0)} | ${float(r.get('estimated_usd') or 0):.3f} | "
+                    f"{', '.join(capped) or '—'} |")
+          PY

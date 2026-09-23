@@ -1,230 +1,186 @@
-# Watchlist Pipeline
+# Watchlist — public PM job board
 
-GitHub Actions cron job that fetches open Product Manager and Forward-Deployed / Applied-AI Engineer roles from ATS APIs, scores them against a candidate profile via the Claude API, and upserts results into Supabase. The Lovable frontend at [watchlist-product-management.lovable.app](https://watchlist-product-management.lovable.app) reads from Supabase and displays the live board.
+Ingestion pipeline for a public Product Management job board. GitHub Actions
+reads company ATS feeds, classifies each posting once, and writes structured
+facts to Supabase. The [frontend](https://github.com/wishmur/watchlist-product-management)
+reads views from that database.
 
-**Architecture:**
-
-```
-GitHub Actions (7 AM PT daily)
-  └─ fetch_and_score.py
-       ├─ pulls companies from Supabase
-       ├─ fetches postings from Greenhouse / Ashby / Lever / Workday
-       ├─ keeps PM + FDE titles in any US location (filters.py)
-       ├─ fetches the JD for each kept role
-       ├─ scores each new job two-stage: Haiku screens → Sonnet confirms the top ones
-       └─ upserts jobs + matches into Supabase
-            └─ Lovable reads v_watchlist view → public board
-
-expand_companies.py (run manually, whenever you want to widen the list)
-  ├─ reads data/{greenhouse,ashby,lever,workday}.csv (~12.5k companies, bundled locally)
-  ├─ skips anything already in Supabase
-  ├─ live-checks each remaining company's job board for an open PM or FDE role
-  │  (no Claude calls — pure HTTP checks, free)
-  └─ writes new_companies.sql for anything with a live match today
-```
-
----
-
-## Setup (one time)
-
-### 1. Supabase
-
-Run these SQL files in order in your Supabase SQL Editor:
+**No visitor action ever triggers an LLM call.** That is structural, not a
+policy: the frontend has no Anthropic key, no `supabase/functions/`, and no
+server route that could reach one. The only API key lives in Actions secrets.
 
 ```
-sql/001_initial_schema.sql   — tables (companies, jobs, matches) + v_watchlist view
-sql/002_rls_policies.sql     — public read, no anon writes
-sql/seed.sql                 — initial company list
+board.yml (6:30 AM PT daily)
+  ├─ ingest.py      companies → ATS feeds → Gate 1 → jobs        [zero LLM calls]
+  └─ classify.py    distinct postings → Gate 2 → job_facts        [capped spend]
+                                                   └─ v_jobs_us / v_jobs_intl → board
+
+expand.yml (6 AM PT daily)
+  └─ expand_companies.py   discovers new companies from data/*.csv [zero LLM calls]
 ```
 
-The board is read-only — there's no write path or password to configure.
+## Scope
 
-> Upgrading an older database that still has the application-tracking tables?
-> Run `sql/003_remove_applications.sql` once to drop them and rebuild the view.
-> A fresh install from the files above never creates them, so you can skip it.
->
-> Also run `sql/004_filter_v_watchlist_by_score.sql` once — required so the
-> board keeps showing only ≥65 matches now that `fetch_and_score.py` stores
-> every score (the fix that stopped daily re-scoring of rejects).
->
-> Also run `sql/005_public_read_hardening.sql` once — required for the
-> frontend's header stats (companies tracked, ATS platforms covered) and
-> market-snapshot section. It replaces the frontend's direct reads of the
-> raw `companies`/`matches` tables with two narrow aggregate views
-> (`v_watchlist_meta`, `v_ats_coverage`) and revokes public SELECT on the
-> raw tables, which previously let anyone with the (necessarily public)
-> anon key query every score ever computed, not just the curated board.
+- **Core PM only.** Product Manager, Product Owner, Product Lead and seniority
+  variants. Forward-deployed and solutions engineering, program management,
+  product marketing, design, analytics and product ops are excluded — every one
+  of those titles contains a word that makes it look like a match.
+- **Seven countries.** US, UK, Ireland, Germany, Netherlands, Sweden, Denmark,
+  as an explicit allowlist. The board has a US tab and an International tab; a
+  requisition genuinely open on both continents appears on both.
+- **No fit score.** Roles are ranked by freshness and how completely the posting
+  describes itself. Everything else is a filter.
 
-### 2. GitHub repo
+## The two gates
 
-Create a new private repo (or use this one). Push this folder — including `data/`, it's ~830KB of CSVs and needed for `expand_companies.py`.
+**Gate 1 — `filters.py`.** Deterministic, no network, no model. Returns
+`include` / `exclude` / `uncertain` per title, plus a country allowlist check.
+Drops roughly half of everything before anything costs money.
 
-### 3. GitHub Secrets
+`uncertain` matters: "Forward Deployed Product Manager" is a genuine coin-flip
+between two families, and resolving cases like that in a regex is how 45% of the
+previous board became Solutions Architects. Ambiguity escalates to Gate 2
+instead of being guessed.
 
-Go to **Settings → Secrets → Actions** and add:
-
-| Secret name           | Where to find it |
-|-----------------------|-----------------|
-| `SUPABASE_URL`        | Supabase → Project Settings → API → Project URL |
-| `SUPABASE_SERVICE_KEY`| Supabase → Project Settings → API → service_role key (not anon) |
-| `ANTHROPIC_API_KEY`   | console.anthropic.com → API Keys |
-
-### 4. Trigger a manual run
-
-Go to **Actions → Watchlist — daily job fetch + score → Run workflow**.
-
-Set **dry_run = true** first to validate the fetch without writing to DB. Check the logs. If companies and job counts look right, run again with dry_run = false.
-
-### 5. Verify in Supabase
-
-```sql
--- Check what got populated
-select count(*) from jobs;
-select count(*) from matches;
-select * from v_watchlist order by score desc limit 10;
-```
-
----
-
-## Widening the company list
-
-`scripts/expand_companies.py` reads a bundled local dataset (`data/*.csv`, ~12,500 companies across Greenhouse, Ashby, Lever, and Workday) — no external dependency, no cost, and about 6x the coverage of the old `--limit 2000` default.
-
-This runs automatically, **daily at 6 AM PT**, via **`.github/workflows/expand.yml`** — one hour before the fetch+score run — so newly found companies are scored the same morning. It writes new companies straight into Supabase (`tier=explore`, `source=discovered`, `active=true`). A company only gets written if it currently has a live posting matching your PM/FDE + US-location filters — nothing gets added on name alone.
-
-Every run still produces `new_companies.sql` as an audit log — visible in the GitHub Actions run summary and attached as a downloadable artifact — purely so you can see what got added and why, or clean up a bad match later with a one-line `update companies set active = false where ...`. It's a paper trail, not a gate.
-
-### Trigger it manually / adjust scope
-
-Go to **Actions → Watchlist — discover new companies → Run workflow** any time you don't want to wait for the 6 AM run, or to scan a narrower slice:
-
-- `ats`: which platforms to check (default: all 4)
-- `limit`: cap candidates per ATS (default: 0 = full list)
-- `tier`: what tier to tag new companies with (default: explore)
-- `dry_run`: check this to skip the Supabase write and only produce the audit-log SQL for a one-off manual review
-
-Expect a full 4-ATS scan (~12.5k companies) to take roughly 10-20 minutes — it's a lot of small HTTP requests, not an expensive operation, and it makes zero Claude calls either way.
-
-### Or run it locally
+Include patterns anchor on the PM **noun**, never on a seniority prefix. A
+plausible-looking `\b(senior|staff|principal) product\b` pattern silently admits
+"Senior Product Security Engineer" and "Senior Product Development Analyst" —
+both observed live, and together about 6% of apparent PM roles.
 
 ```bash
-export SUPABASE_URL=https://xxxx.supabase.co
-export SUPABASE_SERVICE_KEY=your-service-role-key
-pip install httpx
-
-python scripts/expand_companies.py                      # writes straight to Supabase, all 4 ATS types
-python scripts/expand_companies.py --dry-run             # SQL file only, nothing written
-python scripts/expand_companies.py --ats workday         # just one ATS type
+python scripts/filters.py --selftest     # 76 cases, offline
 ```
 
----
+**Gate 2 — `classify.py`.** One Haiku call per distinct posting content, keyed
+by `(company_id, content_hash)`, with a tool schema rather than "reply with
+JSON". Cross-posted requisitions — one company posting the same req in 14 cities
+— share a single extraction.
 
-## Updating companies
+A tool-schema `enum` is a strong hint, not an enforced constraint; the model has
+returned values outside it. Every enum-constrained field is clamped to the
+vocabulary before insert, or one bad value fails the whole batch.
 
-Edit `sql/seed.sql` and re-run it in Supabase SQL Editor. The `ON CONFLICT` clause makes it idempotent — existing rows update, new ones insert. To disable a company without deleting it:
+## Spend control
 
-```sql
-update companies set active = false where name = 'Acme Corp';
+| Layer | Knob | Default |
+|---|---|---|
+| Hard call budget | `MAX_CLASSIFY_CALLS` | 1500 |
+| Token-spend abort | `RUN_BUDGET_USD` | $3.00 |
+| Accounting | `pipeline_runs` table | — |
+
+Ingestion is free — it makes no model calls — so it runs wide. All spend is in
+classification. An unpriced model raises rather than running uncapped.
+
+`FIRST_RUN_DAYS` (60) is **not** the backfill window and the two should not be
+conflated. A 7-day first-run window captures 0 of Databricks' 24 open PM roles
+and 0 of Ramp's 6, because companies do not post in the week they are
+discovered — and the next run treats them as known, losing the back-catalogue
+permanently. The freshness window belongs on `classify.py --since-days`, which
+is the only stage that costs anything.
+
+## Accuracy
+
+`run_eval.py` measures the PM / not-PM decision against `eval/golden_set.yaml`:
+85 real postings, deliberately oversampling the FDE and solutions titles that
+dominated the old board.
+
+```
+precision  100.0%   (0 false positives across 30 negatives)
+recall     100.0%
+85 examples, ~$0.41 per run
 ```
 
-To add a new company inline (without editing seed.sql):
+Precision is the headline. This board can afford to miss a role; it cannot
+afford to tell someone a solutions architect job is product management.
 
-```sql
-insert into companies (name, ats_type, ats_slug, tier, active, source, notes)
-values ('Retool', 'greenhouse', 'retool', 'strong', true, 'manual', null)
-on conflict (ats_type, ats_slug) do nothing;
-```
-
-### Finding ATS slugs
-
-- **Greenhouse**: visit `boards.greenhouse.io/{slug}` — the slug is in the URL on their careers page
-- **Ashby**: visit `jobs.ashbyhq.com/{slug}` — same pattern
-- **Lever**: visit `jobs.lever.co/{slug}`
-- **Workday**: visit their careers page, look at the URL: `{tenant}.wd{N}.myworkdayjobs.com/{site}` → slug = `wd{N}/{tenant}/{site}`
-- Or just check `data/{ats}.csv` — it's a lot faster than hunting on the live site, and it's what `expand_companies.py` uses.
-
----
-
-## Filtering & scoring
-
-Two stages: a cheap deterministic **filter** (no Claude), then an LLM **score** on the survivors.
-
-**Filters** live in `scripts/filters.py` — the single source of truth shared by `fetch_and_score.py` and `expand_companies.py` (they used to be copy-pasted and drifted). Two decisions:
-
-- `classify_role(title)` → `"pm" | "fde" | None`. Two target families: **PM** (Product Manager / Product Lead, any IC seniority) and **FDE** (Forward Deployed / Applied AI / Solutions / Deployment / Implementation Engineer). Only exec/people-manager titles (Director, VP, Head-of, Chief) and interns are hard-dropped; Staff / Principal / Lead / Group PM pass through and are judged by the scorer.
-- `is_us_location(location)` → keeps **all US locations + remote/unspecified**; drops only clearly non-US postings. (No metro allow-list — a role in Denver or Atlanta is kept, not silently dropped.)
-
-Run the offline check for both:
 ```bash
-python scripts/filters.py --selftest
+python scripts/run_eval.py --dry-run     # cost estimate, no API calls
+python scripts/run_eval.py --no-write    # run, print, persist nothing
 ```
 
-**Scoring is two-stage, to keep token cost down.** The candidate profile is in `profile/candidate_profile.md` — update it as your experience changes. Because ~97% of scanned jobs get rejected, a cheap model does the screening and the pricey one only judges the promising few:
+## Setup
 
-- **Stage 1 — Claude Haiku** (`SCORE_MODEL_STAGE1`) scores *every* kept job.
-- **Stage 2 — Claude Sonnet** (`SCORE_MODEL_STAGE2`) re-scores *only* jobs whose Haiku score ≥ `STAGE1_PASS` (default 55) — the authoritative verdict. Sub-55 jobs keep the Haiku score (below the 65 match threshold anyway) and never touch Sonnet.
-
-Both stages use the same rubric, which:
-
-- picks the right lens per role family (product-ownership fit for PM, ships-next-to-the-customer fit for FDE),
-- applies the profile's **years-of-experience rule** (roles accepting "PM *or equivalent / adjacent / technical* experience" score well; rigid "5+/7+ years of pure PM, no adjacency" roles get a weak `level_fit` and are capped below threshold in code),
-- treats **any US or remote location as strong** (location never drags a US role's score), and
-- flags hard **blockers** (US citizenship / clearance / green card / no-sponsorship-ever) and forces those to 0.
-
-Deterministic caps in `_apply_score_guards()` enforce the blocker/experience rules regardless of model wording, and fold the detected role family + years-required into the stored `reasoning` (so the board shows them without a schema change).
-
-**Cost knobs** (all env-overridable): the profile + rubric ride in a **cached** `system` block (repeat calls bill those ~1,100 tokens at 0.1×); `JD_MAX_CHARS` (default 3000) caps how much of each JD is sent; `FIRST_RUN_DAYS` (default 14) bounds the back-catalog a brand-new company seeds. The final log line reports `haiku_calls` / `sonnet_calls` so you can see the split. Together these turn a full reset from ~$20 into a few dollars, and incremental daily runs into cents (only genuinely new postings are ever scored; existing matches are never re-scored).
-
-`SCORE_THRESHOLD` (default 65) is the minimum score stored as a match. Jobs below it are still stored in `jobs` but won't appear in `v_watchlist` (which requires a match row). Raise to 70 for a cleaner board; lower to 60 to see more.
-
----
-
-## Workday
-
-Workday has no public API. The pipeline uses an undocumented JSON endpoint (`/wday/cxs/{tenant}/{site}/jobs`) that powers their own career-page search widget. Some tenants may still block or rate-limit it. Slugs in `data/workday.csv` were parsed directly from each tenant's live careers URL, so they should be accurate — but if a Workday company shows 0 jobs and you know they're hiring, double check the tenant/site against their current careers page; Workday tenants occasionally rename sites.
-
-Not every big employer is on Workday, Greenhouse, Ashby, or Lever — Garmin, for instance, runs on iCIMS, and Hugging Face is on Workable. Both are left `active = false` in `seed.sql` with a note. Adding support for more ATS platforms is a bigger lift (a new fetcher function + parser per platform) and isn't included in this pass — flag it if it becomes worth the effort.
-
----
-
-## Cron schedule
-
-Two daily workflows, staggered so discovery finishes before scoring starts:
-
-| Workflow | Time (Pacific) | Cron (UTC) | What it does |
-|----------|----------------|------------|--------------|
-| `.github/workflows/expand.yml` | 6 AM PT | `0 13 * * *` | discover new companies with live PM/FDE roles → Supabase |
-| `.github/workflows/main.yml`   | 7 AM PT | `0 14 * * *` | fetch + score new postings → Supabase |
-
-Both leave results in Supabase before ~8 AM. GitHub Actions crons are fixed UTC (no DST), so in winter (PST) they run an hour earlier — still before 8 AM. Crons can also drift up to ~15 min under load. To change a time, edit the `cron:` line in that workflow.
-
-**Recency windows** (`fetch_and_score.py`): a company already in the DB only fetches its recent postings (`CUTOFF_HOURS`, ~last 24h); a brand-new company seeds a 30-day back-catalog on its first run (`FIRST_RUN_DAYS`). Postings with no date (all Workday) can't be dated, so they're always kept.
-
----
-
-## File structure
+Run the SQL files in order in the Supabase SQL editor:
 
 ```
-.github/
-  workflows/
-    expand.yml           — daily cron 6 AM PT: company discovery (writes to Supabase)
-    main.yml             — daily cron 7 AM PT: fetch + score (writes to Supabase)
-data/
-  greenhouse.csv          — ~4,970 companies
-  ashby.csv                — ~2,860 companies
-  lever.csv                 — ~2,110 companies
-  workday.csv                — ~2,600 companies
+sql/001_initial_schema.sql
+sql/002_rls_policies.sql
+sql/005_public_read_hardening.sql   -- see the warning below
+sql/008_pm_board_v1.sql             -- job_facts, board views, eval tables
+```
+
+`003`, `004`, `006` and `007` are superseded: `006` designed the job_facts layer
+but was never applied, and `008` replaces it. Verify what is actually live:
+
+```bash
+python scripts/check_schema.py
+```
+
+> **`sql/005` is not applied on the live project.** This README previously
+> claimed it was. Probing with the public anon key returns rows from
+> `companies`, `jobs` and `matches` — every score ever computed, including
+> rejects whose `reasoning` text is candidate-specific, plus the full `raw_jd`
+> of every posting. `check_schema.py` fails on exactly this. Apply `005`, and
+> rotate the publishable key, which is in git history.
+
+### Secrets
+
+| Secret | Where |
+|---|---|
+| `SUPABASE_URL` | Supabase → Project Settings → API |
+| `SUPABASE_SERVICE_KEY` | same page, service_role (not anon) |
+| `ANTHROPIC_API_KEY` | console.anthropic.com |
+
+## Running locally
+
+```bash
+pip install -r requirements.txt
+
+python scripts/ingest.py --dry-run --limit 20        # fetch + screen, write nothing
+python scripts/classify.py --dry-run                 # worklist + cost estimate
+python scripts/classify.py --since-days 7            # launch backfill
+python scripts/classify.py --restale                 # re-extract stale versions
+```
+
+## ATS notes
+
+- **Greenhouse** — the per-job endpoint carries `offices`, `departments`,
+  `content` and `first_published` in the call already being made. Use
+  `first_published`, not `updated_at`: an edited old req looks new otherwise.
+- **Ashby** — returns `{"jobs": [...]}` with `job.location`. It was once
+  `jobPostings` / `locationName`, and reading the old key returns an empty list
+  rather than raising, so Ashby failed **silently** for months — 21 seeded
+  companies, 0 board rows, clean logs.
+- **Lever** — `categories.allLocations` gives the full location list.
+- **Workday** — `searchText` is load-bearing. With `""` it returns the head of
+  the whole board unordered: 16.6% of postings crawled across 30 large tenants
+  and 23 PM roles, versus 77 for two targeted queries. One query is not enough
+  for this scope — `"product manager"` alone recalls 95.1%, adding
+  `"product owner"` reaches 98.8%, `"product lead"` adds nothing. Opaque
+  `"3 Locations"` strings are resolved via the detail endpoint.
+
+Coverage is not uniform: Greenhouse, Ashby and Lever carry most European tech
+employers; Workday adds volume but skews to US retail and industrial tenants.
+Several European employers (Klarna, Wise, Revolut, Booking, Miro) are on
+platforms this pipeline does not support at all.
+
+## Files
+
+```
+.github/workflows/
+  board.yml              ingest + classify (new pipeline)
+  main.yml               legacy fetch+score — still the scheduled job
+  expand.yml             company discovery
 scripts/
-  fetch_and_score.py   — main daily pipeline
-  expand_companies.py  — manual company-list widener
-  filters.py           — shared PM/FDE title + US-location filters (run --selftest)
-sql/
-  001_initial_schema.sql
-  002_rls_policies.sql
-  003_remove_applications.sql   — one-time migration for older DBs (drops apply feature)
-  004_filter_v_watchlist_by_score.sql   — one-time migration: filter board to score >= 65
-  005_public_read_hardening.sql   — one-time migration: aggregate-only public views, revoke raw-table reads
-  seed.sql
-requirements.txt
-README.md
+  ats.py                 four ATS platforms behind one shape
+  filters.py             Gate 1 — title + country, deterministic
+  ingest.py              fan-out, dedupe, closed-detection   [no LLM]
+  classify.py            Gate 2 — one Haiku call per posting [capped]
+  taxonomy.py            controlled vocabulary, versioned
+  run_eval.py            precision/recall on the golden set
+  check_schema.py        asserts the live schema matches the code
+  expand_companies.py    company discovery                   [no LLM]
+sql/008_pm_board_v1.sql  job_facts, board views, eval tables
+eval/golden_set.yaml     85 labelled real postings
+data/*.csv               ~12,500 company slugs across 4 platforms
 ```
